@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -29,6 +30,8 @@ session = boto3.Session(
 # Now you can use the Boto3 session to interact with AWS services
 s3_client = session.client('s3')
 cf_client = session.client('cloudformation')
+glue_client = session.client("glue")
+
 
 def get_csv_filenames(directory):
     # Initialize a list to store CSV filenames
@@ -42,6 +45,7 @@ def get_csv_filenames(directory):
             csv_filenames.append(filename)
 
     return csv_filenames
+
 
 def validate_cloudformation_template(template_body):
     try:
@@ -91,10 +95,35 @@ def upload_cloudformation_template(stack_name, template_body):
 
 def populate_s3(bucket_name, file_path):
     try:
-        response = s3_client.upload_file(file_path, bucket_name, file_path)
-        print(f"File uploaded successfully to s3://{bucket_name}/{file_path}")
+        response = s3_client.upload_file(file_path, bucket_name, f"{file_path.split('.')[0]}/{file_path}")
+        print(f"File uploaded successfully to s3://{bucket_name}/{file_path.split('.')[0]}/{file_path}")
     except Exception as e:
         print(f"Error uploading file to S3: {e}")
+
+
+def run_crawler(crawler_name):
+    try:
+        # Start the crawler
+        response = glue_client.start_crawler(Name=crawler_name)
+        print("Crawler '{}' started successfully.".format(crawler_name))
+
+        # Wait until the crawler finishes
+        while True:
+            response = glue_client.get_crawler(Name=crawler_name)
+            crawler_state = response['Crawler']['State']
+            if crawler_state == 'READY':
+                print("Crawler '{}' finished successfully.".format(crawler_name))
+                # Extract and return the table name created by the crawler
+                return response['Crawler']['Targets']['S3Targets'][0]['Path']
+            elif crawler_state == 'FAILED':
+                raise Exception("Crawler '{}' failed.".format(crawler_name))
+            else:
+                print("Crawler '{}' is still running...".format(crawler_name))
+                time.sleep(10)  # Wait for 10 seconds before checking again
+
+    except Exception as e:
+        print("An error occurred:", e)
+        return None
 
 
 # Example usage
@@ -127,4 +156,5 @@ if __name__ == "__main__":
     # Print the list of CSV filenames
     for filename in csv_files:
         populate_s3(parsed_outputs['GeneratedBucketName'], f'{data_path}/{filename}')
-        print(f'{filename} uploaded to S3 Bucket')
+
+    run_crawler(parsed_outputs['GeneratedCrawler'])

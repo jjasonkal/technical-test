@@ -3,6 +3,75 @@ Resources:
   MyS3Bucket:
     Type: "AWS::S3::Bucket"
     Properties: {}
+
+  MyGlueDatabase:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput: {}
+
+  GlueCrawlerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ 'glue.amazonaws.com' ]
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: GlueCrawlerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${MyS3Bucket}'
+                  - !Sub 'arn:aws:s3:::${MyS3Bucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'glue:StartCrawler'
+                  - 'glue:CreateDatabase'
+                  - 'glue:GetDatabase'
+                  - 'glue:CreateTable'
+                  - 'glue:GetTable'
+                  - 'glue:CreateTableVersion'
+                  - 'glue:GetTableVersion'
+                  - 'glue:UpdateTable'
+                  - 'glue:BatchCreatePartition'
+                  - 'glue:BatchGetPartition'
+                  - 'glue:GetPartition'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  GlueCrawler:
+    Type: 'AWS::Glue::Crawler'
+    DependsOn:
+      - MyGlueDatabase
+      - MyS3Bucket
+      - GlueCrawlerRole
+    Properties:
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref MyGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${MyS3Bucket}/'
+      RecrawlPolicy:
+        RecrawlBehavior: CRAWL_EVERYTHING
+
 Outputs:
   GeneratedBucketName:
     Value: !Ref MyS3Bucket
+  GeneratedCrawler:
+    Value: !Ref GlueCrawler
+  GeneratedDatabase:
+    Value: !Ref MyGlueDatabase
