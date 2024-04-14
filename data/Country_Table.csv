@@ -1,0 +1,20 @@
+id,city,country,sales_channel
+5,Chicago,US,B2B
+20,London,GB,B2C
+11,Chicago,US,B2C
+77,Dublin,IE,B2B
+16,London,GB,B2B
+79,Dublin,IE,B2C
+160,Tokyo,JP,B2B
+30,Kowloon city,HK,B2B
+28,Sydney,AU,B2B
+'12',New York,US,B2B
+3,Sydney,AU,B2C
+166,Tokyo,JP,B2C
+'78',Cork,IE,B2B
+21,Manchester,GB,B2C
+80,Cork,IE,B2C
+15,Manchester,GB,B2B
+29,Melbourne,AU,B2B
+74,Seoul,KR,B2B
+'1',Melbourne,AU,B2B
