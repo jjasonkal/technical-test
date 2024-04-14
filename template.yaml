@@ -4,6 +4,10 @@ Resources:
     Type: "AWS::S3::Bucket"
     Properties: {}
 
+  ResourceS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties: { }
+
   MyGlueDatabase:
     Type: 'AWS::Glue::Database'
     Properties:
@@ -68,10 +72,42 @@ Resources:
       RecrawlPolicy:
         RecrawlBehavior: CRAWL_EVERYTHING
 
+  GlueETLRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "glue.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "GlueETLPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "iam:PassRole"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "redshift:*"
+                  - "s3:*"
+                  - "glue:*"
+                  - "logs:*"
+                  - "secretsmanager:*"
+                Resource: "*"
+
 Outputs:
   GeneratedBucketName:
     Value: !Ref MyS3Bucket
+  GeneratedResourceBucketName:
+    Value: !Ref ResourceS3Bucket
   GeneratedCrawler:
     Value: !Ref GlueCrawler
   GeneratedDatabase:
     Value: !Ref MyGlueDatabase
+  GeneratedGlueETLRole:
+    Value: !GetAtt GlueETLRole.Arn

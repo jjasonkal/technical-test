@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
 import time
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,6 +13,16 @@ aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 aws_default_region = os.getenv("AWS_DEFAULT_REGION")
 data_path = os.getenv("DATA_PATH")
+script_file_path = os.getenv("SCRIPT_FILE_PATH")
+secret_name = os.getenv("SECRET_NAME")
+secret_values = {
+    "username": os.getenv("DW_USER"),
+    "password": os.getenv("DW_PASS"),
+    "dbname": os.getenv("DW_DB"),
+    "host": os.getenv("DW_HOST"),
+    "port": os.getenv("DW_PORT"),
+    "engine": os.getenv("DW_ENGINE")
+}
 
 # Validate environment variables
 if not all([aws_access_key_id, aws_secret_access_key, aws_default_region]):
@@ -31,6 +42,7 @@ session = boto3.Session(
 s3_client = session.client('s3')
 cf_client = session.client('cloudformation')
 glue_client = session.client("glue")
+secrets_client = boto3.client('secretsmanager')
 
 
 def get_csv_filenames(directory):
@@ -93,10 +105,42 @@ def upload_cloudformation_template(stack_name, template_body):
     return stack_description['Stacks'][0]['Outputs']
 
 
+def create_secret(secret_name, secret_values):
+    try:
+        # Create a Secrets Manager client
+
+        # Check if the secret already exists
+        response = secrets_client.describe_secret(SecretId=secret_name)
+        print("Secret already exists, skipping creation.")
+
+    except ClientError as e:
+        # If the secret does not exist, create it
+        if e.response['Error']['Code'] == 'ResourceNotFoundException':
+
+            # Convert dictionary to JSON string
+            secret_string = json.dumps(secret_values)
+
+            # Create the secret
+            response = secrets_client.create_secret(
+                Name=secret_name,
+                Description='Redshift Credentials',
+                SecretString=secret_string
+            )
+
+            print("Secret created successfully:", response["ARN"])
+
+        else:
+            # Handle other errors
+            print("Error:", e)
+
 def populate_s3(bucket_name, file_path):
     try:
-        response = s3_client.upload_file(file_path, bucket_name, f"{file_path.split('.')[0]}/{file_path}")
-        print(f"File uploaded successfully to s3://{bucket_name}/{file_path.split('.')[0]}/{file_path}")
+        if file_path.endswith(".csv"):
+            response = s3_client.upload_file(file_path, bucket_name, f"{file_path.split('.')[0]}/{file_path}")
+            print(f"File uploaded successfully to s3://{bucket_name}/{file_path.split('.')[0]}/{file_path}")
+        else:
+            response = s3_client.upload_file(file_path, bucket_name, file_path)
+            print(f"File uploaded successfully to s3://{bucket_name}/{file_path}")
     except Exception as e:
         print(f"Error uploading file to S3: {e}")
 
@@ -124,6 +168,67 @@ def run_crawler(crawler_name):
     except Exception as e:
         print("An error occurred:", e)
         return None
+
+
+def create_and_run_glue_etl(job_name, role_arn, default_arguments, resource_bucket_name, script_file_path):
+    script_location = f"s3://{resource_bucket_name}/{script_file_path}"
+
+    # Define the job parameters
+
+    job_command = {
+        "Name": "glueetl",
+        "ScriptLocation": script_location
+    }
+    job_role = role_arn
+
+    try:
+        glue_client.get_job(JobName=job_name)
+        print("Glue ETL job already exists.")
+    except glue_client.exceptions.EntityNotFoundException:
+        # Create the Glue ETL job with Glue version 4.0 and 2 DPUs
+        response = glue_client.create_job(
+            Name=job_name,
+            Role=job_role,
+            Command=job_command,
+            DefaultArguments=default_arguments,
+            ExecutionProperty={
+                "MaxConcurrentRuns": 1
+            },
+            GlueVersion="4.0",
+            MaxRetries=0,
+            Timeout=10,
+            MaxCapacity=2
+        )
+        print("Glue ETL job created successfully:", response["Name"])
+        run_glue_etl(job_name)
+
+    except Exception as e:
+        print("An error occurred:", e)
+
+
+def run_glue_etl(job_name):
+    try:
+        # Start the Glue ETL job
+        response = glue_client.start_job_run(JobName=job_name)
+        job_run_id = response['JobRunId']
+        print("Glue ETL job '{}' started successfully with JobRunId: {}".format(job_name, job_run_id))
+
+        # Wait until the job finishes
+        while True:
+            response = glue_client.get_job_run(JobName=job_name, RunId=job_run_id)
+            job_run_state = response['JobRun']['JobRunState']
+            if job_run_state == 'SUCCEEDED':
+                print(
+                    "Glue ETL job '{}' finished successfully. Data Warehouse tables have been populated".format(job_name))
+                break
+            elif job_run_state == 'FAILED':
+                raise Exception("Glue ETL job '{}' failed.".format(job_name))
+            else:
+                print("Glue ETL job '{}' is still running...".format(job_name))
+                time.sleep(10)  # Wait for 10 seconds before checking again
+
+    except Exception as e:
+        print("An error occurred:", e)
 
 
 # Example usage
@@ -158,3 +263,21 @@ if __name__ == "__main__":
         populate_s3(parsed_outputs['GeneratedBucketName'], f'{data_path}/{filename}')
 
     run_crawler(parsed_outputs['GeneratedCrawler'])
+
+    resource_bucket_name = parsed_outputs['GeneratedResourceBucketName']
+    populate_s3(resource_bucket_name, script_file_path)
+
+    create_secret(secret_name, secret_values)
+
+    db = parsed_outputs['GeneratedDatabase']
+
+    default_arguments = {
+        "--SECRET_NAME": secret_name,
+        "--SECRET_REGION": aws_default_region,
+        "--REDSHIFT_TMP_DIR": f"s3://{resource_bucket_name}/",
+        "--DATABASE": db,
+    }
+
+    role_arn = parsed_outputs['GeneratedGlueETLRole']
+
+    create_and_run_glue_etl(os.getenv("JOB_NAME"), role_arn, default_arguments, resource_bucket_name, script_file_path)
