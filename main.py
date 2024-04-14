@@ -4,6 +4,7 @@ import boto3
 from botocore.exceptions import ClientError
 import time
 import json
+import psycopg2
 
 # Load environment variables from .env file
 load_dotenv()
@@ -133,6 +134,7 @@ def create_secret(secret_name, secret_values):
             # Handle other errors
             print("Error:", e)
 
+
 def populate_s3(bucket_name, file_path):
     try:
         if file_path.endswith(".csv"):
@@ -219,7 +221,8 @@ def run_glue_etl(job_name):
             job_run_state = response['JobRun']['JobRunState']
             if job_run_state == 'SUCCEEDED':
                 print(
-                    "Glue ETL job '{}' finished successfully. Data Warehouse tables have been populated".format(job_name))
+                    "Glue ETL job '{}' finished successfully. Data Warehouse tables have been populated".format(
+                        job_name))
                 break
             elif job_run_state == 'FAILED':
                 raise Exception("Glue ETL job '{}' failed.".format(job_name))
@@ -231,7 +234,61 @@ def run_glue_etl(job_name):
         print("An error occurred:", e)
 
 
-# Example usage
+def get_count_from_csv(file_path):
+    # Initialize count
+    count = 0
+
+    # Open the CSV file
+    with open(file_path, 'r') as file:
+        # Count the total number of lines
+        count = sum(1 for line in file)
+
+    # Subtract 1 to exclude the header row
+    return count - 1
+
+
+def get_count_from_redshift(table_name):
+    # Connect to Redshift
+    conn = psycopg2.connect(
+        dbname=os.getenv("DW_DB"),
+        user=os.getenv("DW_USER"),
+        password=os.getenv("DW_PASS"),
+        host=os.getenv("DW_HOST"),
+        port=os.getenv("DW_PORT")
+    )
+    cursor = conn.cursor()
+
+    # Execute SQL query to retrieve count of records in the Redshift table
+    cursor.execute(f'SELECT COUNT(*) FROM public.{table_name}')
+    count = cursor.fetchone()[0]
+
+    # Close connection
+    cursor.close()
+    conn.close()
+
+    return count
+
+
+def test_record_counts(csv_files, data_path):
+    # Iterate through each CSV file
+    for csv_file in csv_files:
+        # Construct full file path
+        csv_file_path = os.path.join(data_path, csv_file)
+
+        # Get count from Redshift for table with same name as CSV file
+        redshift_count = get_count_from_redshift(csv_file[:-4])  # Remove .csv extension
+        # Get count from CSV file
+        csv_count = get_count_from_csv(csv_file_path)
+
+        print(f'CSV row count for {csv_file}: {csv_count}')
+        print(f'Data Warehouse table row count for {csv_file}: {redshift_count}')
+
+        # Assert counts are equal
+        assert redshift_count == csv_count, f"Counts mismatch for {csv_file}: Redshift count = {redshift_count}, CSV count = {csv_count}"
+
+    print("Record counts match for all CSV files!")
+
+
 if __name__ == "__main__":
     stack_name = os.getenv("STACK_NAME")
     template_file = os.getenv("CLOUDFORMATION_TEMPLATE_PATH")
@@ -281,3 +338,5 @@ if __name__ == "__main__":
     role_arn = parsed_outputs['GeneratedGlueETLRole']
 
     create_and_run_glue_etl(os.getenv("JOB_NAME"), role_arn, default_arguments, resource_bucket_name, script_file_path)
+
+    test_record_counts(csv_files, data_path)
